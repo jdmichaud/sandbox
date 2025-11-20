@@ -234,23 +234,33 @@ done < "/proc/$USER_SHELL_PID/environ"
 # Locate sudo to mask it inside the container
 SUDO_BIN=$(command -v sudo)
 
+# Generate a custom rcfile content to load user config THEN apply prompt
+SANDBOX_RC="
+if [ -f /etc/bash.bashrc ]; then source /etc/bash.bashrc; fi
+if [ -f \"\$HOME/.bashrc\" ]; then source \"\$HOME/.bashrc\"; fi
+PS1=\"(${PROMPT_NAME}) \$PS1\"
+"
+
 # We run bwrap as ROOT (allowing namespace creation).
 # Inside the sandbox, we use 'runuser' to drop to the Real User.
 # -p ensures the environment we built in ENV_ARGS is preserved.
 # We mask sudo binary with /dev/null to prevent privilege escalation inside sandbox.
-# FIX: Moved --ro-bind / / to the TOP so subsequent binds (like /dev) override it.
+# Moved --ro-bind / / to the TOP so subsequent binds (like /dev) override it.
+# Use --file 9 ... to create the rcfile inside /tmp from string data
+(
 "$BWRAP_BIN" \
     "${ENV_ARGS[@]}" \
     --ro-bind / / \
     --dev-bind /dev /dev \
     --tmpfs /tmp \
+    --file 9 /tmp/sandbox.rc \
     --bind /run /run \
     --bind /var/tmp /var/tmp \
     --ro-bind /dev/null "$SUDO_BIN" \
     --proc /proc \
     --overlay-src "${TARGET_DIR}" \
     --overlay "${TMP_MOUNT}/upper" "${TMP_MOUNT}/work" "${TARGET_DIR}" \
-    --setenv PS1 "(${PROMPT_NAME}) \u@\h:\w$ " \
-    runuser -u "$REAL_USER" -p -- /bin/bash
+    runuser -u "$REAL_USER" -p -- /bin/bash --rcfile /tmp/sandbox.rc
+) 9<<<"$SANDBOX_RC"
 
 # Trap triggers cleanup (unmount) automatically here
