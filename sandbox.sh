@@ -196,6 +196,14 @@ if ! sudo -u "$REAL_USER" mkdir -p "${TMP_MOUNT}/upper" "${TMP_MOUNT}/work"; the
     exit 1
 fi
 
+# Create a physical scratch directory for /tmp to guarantee write permissions
+# We use 1777 (sticky bit) so any user can write, like real /tmp.
+TMP_SCRATCH="${TMP_MOUNT}/scratch"
+if ! mkdir -p "$TMP_SCRATCH" || ! chmod 1777 "$TMP_SCRATCH"; then
+    echo "Error: Failed to setup temporary scratch space."
+    exit 1
+fi
+
 # --- Path Safety Check ---
 META_FILE="${TMP_MOUNT}/.sandbox_target"
 if [ -f "$META_FILE" ]; then
@@ -234,26 +242,24 @@ done < "/proc/$USER_SHELL_PID/environ"
 # Locate sudo to mask it inside the container
 SUDO_BIN=$(command -v sudo)
 
-# Generate a custom rcfile content to load user config THEN apply prompt
-SANDBOX_RC="
+# Generate custom rcfile to update prompt (saved to the writable scratch dir)
+cat <<EOF > "${TMP_SCRATCH}/sandbox.rc"
 if [ -f /etc/bash.bashrc ]; then source /etc/bash.bashrc; fi
-if [ -f \"\$HOME/.bashrc\" ]; then source \"\$HOME/.bashrc\"; fi
-PS1=\"(${PROMPT_NAME}) \$PS1\"
-"
+if [ -f "\$HOME/.bashrc" ]; then source "\$HOME/.bashrc"; fi
+PS1="(${PROMPT_NAME}) \$PS1"
+EOF
 
 # We run bwrap as ROOT (allowing namespace creation).
 # Inside the sandbox, we use 'runuser' to drop to the Real User.
 # -p ensures the environment we built in ENV_ARGS is preserved.
 # We mask sudo binary with /dev/null to prevent privilege escalation inside sandbox.
-# Moved --ro-bind / / to the TOP so subsequent binds (like /dev) override it.
-# Use --file 9 ... to create the rcfile inside /tmp from string data
-(
+# FIX: Moved --ro-bind / / to the TOP so subsequent binds (like /dev) override it.
+# FIX: Bind the host scratch dir to /tmp to ensure 100% valid permissions.
 "$BWRAP_BIN" \
     "${ENV_ARGS[@]}" \
     --ro-bind / / \
     --dev-bind /dev /dev \
-    --tmpfs /tmp \
-    --file 9 /tmp/sandbox.rc \
+    --bind "$TMP_SCRATCH" /tmp \
     --bind /run /run \
     --bind /var/tmp /var/tmp \
     --ro-bind /dev/null "$SUDO_BIN" \
@@ -261,6 +267,5 @@ PS1=\"(${PROMPT_NAME}) \$PS1\"
     --overlay-src "${TARGET_DIR}" \
     --overlay "${TMP_MOUNT}/upper" "${TMP_MOUNT}/work" "${TARGET_DIR}" \
     runuser -u "$REAL_USER" -p -- /bin/bash --rcfile /tmp/sandbox.rc
-) 9<<<"$SANDBOX_RC"
 
 # Trap triggers cleanup (unmount) automatically here
