@@ -213,21 +213,34 @@ fi
 info "[*] Entering Sandbox: ${PROMPT_NAME}"
 info "    Overlay Target: ${TARGET_DIR}"
 
+# --- Environment Import ---
+# We grab the environment variables from the User's Shell (Parent of sudo).
+USER_SHELL_PID=$(ps -o ppid= -p $PPID | tr -d ' ')
+ENV_ARGS=()
+
+while IFS= read -r -d '' pair; do
+    key=${pair%%=*}
+    val=${pair#*=}
+    
+    # Exclude sudo-specific or confusing variables
+    case "$key" in
+        SUDO_*|PWD|OLDPWD|_) continue ;;
+    esac
+
+    ENV_ARGS+=( "--setenv" "$key" "$val" )
+done < "/proc/$USER_SHELL_PID/environ"
+
 # --- Execution ---
 # Locate sudo to mask it inside the container
 SUDO_BIN=$(command -v sudo)
 
 # We run bwrap as ROOT (allowing namespace creation).
 # Inside the sandbox, we use 'runuser' to drop to the Real User.
-# -p ensures the environment (PATH, TERM, PS1) we set is preserved.
+# -p ensures the environment we built in ENV_ARGS is preserved.
 # We mask sudo binary with /dev/null to prevent privilege escalation inside sandbox.
 # FIX: Moved --ro-bind / / to the TOP so subsequent binds (like /dev) override it.
 "$BWRAP_BIN" \
-    --setenv HOME "$REAL_HOME" \
-    --setenv USER "$REAL_USER" \
-    --setenv SHELL "/bin/bash" \
-    --setenv TERM "$TERM" \
-    --setenv PATH "$USER_PATH" \
+    "${ENV_ARGS[@]}" \
     --ro-bind / / \
     --dev-bind /dev /dev \
     --tmpfs /tmp \
